@@ -54,7 +54,7 @@ No repositório do GitHub, abra **Settings → Secrets and variables → Actions
 | `BOTBET_INGEST_URL` | `https://SEU_WORKER.workers.dev/ingest` |
 | `BOTBET_INGEST_SECRET` | o mesmo valor definido como `INGEST_SECRET` no Worker |
 
-Depois acione **Actions → Coletar jogos BotBet → Run workflow**. O agendamento usa 05:00, 11:00 e 17:00 UTC; o GitHub pode atrasar alguns minutos tarefas gratuitas. Se a fonte bloquear uma coleta, o resultado falha fechado: não envia jogo sem dados completos.
+Depois acione **Actions → Coletar jogos BotBet → Run workflow**. O campo **Data a consultar** aceita `AAAA-MM-DD`: deixe vazio para hoje ou informe, por exemplo, `2026-09-06` para amanhã. O agendamento usa 05:00, 11:00 e 17:00 UTC; o GitHub pode atrasar alguns minutos tarefas gratuitas. Se a fonte bloquear uma coleta, o resultado falha fechado: não envia jogo sem dados completos.
 
 ## Execução local opcional
 
