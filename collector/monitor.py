@@ -1,41 +1,38 @@
-"""Coleta diária gratuita com soccerdata/SofaScore e publica no Worker BotBet."""
+"""Coleta gratuita pela ESPN pública e publicação segura no Worker BotBet."""
 
 from __future__ import annotations
 
 import json
 import os
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-import pandas as pd
 import requests
-import soccerdata as sd
 
 ROOT = Path(__file__).resolve().parent
-CACHE_DIR = Path(os.getenv("SOCCERDATA_DIR", ROOT / ".cache"))
 OUTPUT = Path(os.getenv("BOTBET_OUTPUT", ROOT / "latest_run.json"))
-DEFAULT_LEAGUES = "ENG-Premier League,ESP-La Liga,ITA-Serie A,GER-Bundesliga,BRA-Serie A"
+ESPN = "https://site.api.espn.com/apis"
+DEFAULT_LEAGUES = "eng.1,esp.1,ita.1,ger.1,bra.1"
+LEAGUE_NAMES = {
+    "eng.1": "Premier League",
+    "esp.1": "La Liga",
+    "ita.1": "Serie A",
+    "ger.1": "Bundesliga",
+    "bra.1": "Brasileirão Série A",
+}
 LEAGUES = [item.strip() for item in os.getenv("BOTBET_LEAGUES", DEFAULT_LEAGUES).split(",") if item.strip()]
-CALENDAR_LEAGUES = {"BRA", "USA", "NOR", "SWE", "ICE"}
 DISPLAY_TIMEZONE = ZoneInfo(os.getenv("BOTBET_TIMEZONE", "America/Sao_Paulo"))
-
-
-def current_season(league: str, now: datetime) -> str:
-    """Formato que o SofaScore usa: 2627 na Europa; 2026 em ligas de ano civil."""
-    override = os.getenv("BOTBET_SEASON")
-    if override:
-        return override
-    country = league.split("-", 1)[0]
-    if country in CALENDAR_LEAGUES:
-        return str(now.year)
-    start = now.year if now.month >= 7 else now.year - 1
-    return f"{start % 100:02d}{(start + 1) % 100:02d}"
+SESSION = requests.Session()
+SESSION.headers.update({
+    "User-Agent": "Mozilla/5.0 (compatible; BotBetMonitor/1.0; +https://botbet-monitor.botbetwill.workers.dev/)",
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+})
 
 
 def selected_day(now: datetime) -> date:
-    """Usa a data manual do Actions, quando houver; do contrário, hoje no Brasil."""
     requested = os.getenv("BOTBET_TARGET_DATE", "").strip()
     if not requested:
         return now.astimezone(DISPLAY_TIMEZONE).date()
@@ -45,76 +42,124 @@ def selected_day(now: datetime) -> date:
         raise ValueError("BOTBET_TARGET_DATE deve usar o formato AAAA-MM-DD") from error
 
 
-def stamp(value: Any) -> datetime:
-    value = pd.Timestamp(value)
-    if value.tzinfo is None:
-        return value.tz_localize(UTC).to_pydatetime()
-    return value.tz_convert(UTC).to_pydatetime()
+def get_json(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    response = SESSION.get(f"{ESPN}{path}", params=params, timeout=30)
+    if not response.ok:
+        raise RuntimeError(f"ESPN {response.status_code}")
+    return response.json()
+
+
+def stat(entry: dict[str, Any], name: str) -> int | None:
+    item = next((item for item in entry.get("stats", []) if item.get("name") == name), None)
+    try:
+        return int(float(item["value"])) if item else None
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def standings(slug: str, season: int) -> dict[str, dict[str, int]]:
+    data = get_json(f"/v2/sports/soccer/{slug}/standings", {"season": season})
+    entries = [entry for group in data.get("children", []) for entry in group.get("standings", {}).get("entries", [])]
+    result: dict[str, dict[str, int]] = {}
+    for entry in entries:
+        team_id = str(entry.get("team", {}).get("id", ""))
+        points, rank = stat(entry, "points"), stat(entry, "rank")
+        if team_id and points is not None and rank is not None:
+            result[team_id] = {"points": points, "rank": rank}
+    return result
+
+
+def scoreboard(slug: str, target_day: date) -> list[dict[str, Any]]:
+    data = get_json(
+        f"/site/v2/sports/soccer/{slug}/scoreboard",
+        {"dates": target_day.strftime("%Y%m%d"), "limit": 1000},
+    )
+    return data.get("events", [])
 
 
 def form_text(form: dict[str, int]) -> str:
     return f"{form['wins']}V {form['draws']}E {form['losses']}D"
 
 
-def completed_form(schedule: pd.DataFrame, team: str, venue: str, before: datetime) -> dict[str, int] | None:
-    """Últimos cinco resultados do time exclusivamente no mesmo mando de campo."""
-    rows = schedule.copy()
-    rows["_date"] = rows["date"].map(stamp)
-    rows = rows[(rows["_date"] < before) & rows["home_score"].notna() & rows["away_score"].notna()]
-    if venue == "casa":
-        rows = rows[rows["home_team"] == team]
-        mine, theirs = "home_score", "away_score"
-    else:
-        rows = rows[rows["away_team"] == team]
-        mine, theirs = "away_score", "home_score"
-    rows = rows.sort_values("_date", ascending=False).head(5)
-    if len(rows) < 5:
+def team_form(slug: str, team_id: str, venue: str, before: datetime) -> dict[str, int] | None:
+    data = get_json(f"/site/v2/sports/soccer/{slug}/teams/{team_id}/schedule", {"limit": 100})
+    outcomes: list[str] = []
+    for event in sorted(data.get("events", []), key=lambda item: item.get("date", ""), reverse=True):
+        competition = (event.get("competitions") or [{}])[0]
+        status = competition.get("status", {}).get("type", {})
+        if not status.get("completed"):
+            continue
+        try:
+            kickoff = datetime.fromisoformat(event["date"].replace("Z", "+00:00"))
+        except (KeyError, TypeError, ValueError):
+            continue
+        if kickoff >= before:
+            continue
+        mine = next((item for item in competition.get("competitors", []) if str(item.get("team", {}).get("id")) == team_id), None)
+        opponent = next((item for item in competition.get("competitors", []) if str(item.get("team", {}).get("id")) != team_id), None)
+        if not mine or not opponent or mine.get("homeAway") != venue:
+            continue
+        try:
+            own, theirs = int(mine["score"]), int(opponent["score"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        outcomes.append("W" if own > theirs else "D" if own == theirs else "L")
+        if len(outcomes) == 5:
+            break
+    if len(outcomes) < 5:
         return None
-    outcomes = []
-    for row in rows.itertuples(index=False):
-        own, opponent = float(getattr(row, mine)), float(getattr(row, theirs))
-        outcomes.append("W" if own > opponent else "D" if own == opponent else "L")
     return {"wins": outcomes.count("W"), "draws": outcomes.count("D"), "losses": outcomes.count("L")}
 
 
-def standings(table: pd.DataFrame) -> dict[str, dict[str, int]]:
-    rows = table.copy()
-    for column in ("Pts", "GD", "GF"):
-        rows[column] = pd.to_numeric(rows[column], errors="coerce").fillna(0)
-    rows = rows.sort_values(["Pts", "GD", "GF"], ascending=False).reset_index(drop=True)
-    return {str(row.team): {"rank": index + 1, "points": int(row.Pts)} for index, row in rows.iterrows()}
-
-
-def candidate(game: Any, league: str, schedule: pd.DataFrame, table: dict[str, dict[str, int]]) -> dict[str, Any] | None:
-    home, away = str(game.home_team), str(game.away_team)
-    if home not in table or away not in table or table[home]["points"] == table[away]["points"]:
+def candidate(event: dict[str, Any], slug: str, table: dict[str, dict[str, int]], form_cache: dict[tuple[str, str, str, str], dict[str, int] | None]) -> dict[str, Any] | None:
+    competition = (event.get("competitions") or [{}])[0]
+    if competition.get("status", {}).get("type", {}).get("state") != "pre":
         return None
-    favorite = home if table[home]["points"] > table[away]["points"] else away
-    underdog = away if favorite == home else home
-    side = "casa" if favorite == home else "fora"
+    home = next((item for item in competition.get("competitors", []) if item.get("homeAway") == "home"), None)
+    away = next((item for item in competition.get("competitors", []) if item.get("homeAway") == "away"), None)
+    if not home or not away:
+        return None
+    home_id, away_id = str(home.get("team", {}).get("id", "")), str(away.get("team", {}).get("id", ""))
+    if home_id not in table or away_id not in table or table[home_id]["points"] == table[away_id]["points"]:
+        return None
+    favorite = home if table[home_id]["points"] > table[away_id]["points"] else away
+    underdog = away if favorite is home else home
+    favorite_id, underdog_id = str(favorite["team"]["id"]), str(underdog["team"]["id"])
+    side = "casa" if favorite is home else "fora"
     underdog_side = "fora" if side == "casa" else "casa"
-    gap = table[favorite]["points"] - table[underdog]["points"]
+    gap = table[favorite_id]["points"] - table[underdog_id]["points"]
     if gap < 6:
         return None
-    kickoff = stamp(game.date)
-    favorite_form = completed_form(schedule, favorite, side, kickoff)
-    underdog_form = completed_form(schedule, underdog, underdog_side, kickoff)
+    try:
+        kickoff = datetime.fromisoformat(event["date"].replace("Z", "+00:00"))
+    except (KeyError, TypeError, ValueError):
+        return None
+
+    def form(team_id: str, venue: str) -> dict[str, int] | None:
+        key = (slug, team_id, venue, kickoff.isoformat())
+        if key not in form_cache:
+            form_cache[key] = team_form(slug, team_id, venue, kickoff)
+        return form_cache[key]
+
+    favorite_form, underdog_form = form(favorite_id, side), form(underdog_id, underdog_side)
     if not favorite_form or not underdog_form:
         return None
     if favorite_form["losses"] > 1 or favorite_form["draws"] > 1:
         return None
     if underdog_form["wins"] > 1 or underdog_form["losses"] < 3:
         return None
-    local = kickoff.astimezone(DISPLAY_TIMEZONE).strftime("%d/%m %H:%M")
+    home_name = home.get("team", {}).get("displayName", "Casa")
+    away_name = away.get("team", {}).get("displayName", "Fora")
+    favorite_name = favorite.get("team", {}).get("displayName", "Favorito")
     return {
-        "id": str(getattr(game, "game_id", f"{league}:{home}:{away}:{kickoff.isoformat()}")),
-        "league": league.replace("-", " — ", 1),
-        "home": home,
-        "away": away,
-        "time": local,
-        "favorite": favorite,
+        "id": str(event.get("id", f"{slug}:{home_id}:{away_id}:{kickoff.isoformat()}")),
+        "league": LEAGUE_NAMES.get(slug, slug),
+        "home": home_name,
+        "away": away_name,
+        "time": kickoff.astimezone(DISPLAY_TIMEZONE).strftime("%d/%m %H:%M"),
+        "favorite": favorite_name,
         "side": side,
-        "table": f"{table[favorite]['rank']}º ({table[favorite]['points']} pts) × {table[underdog]['rank']}º ({table[underdog]['points']} pts) | +{gap} pts",
+        "table": f"{table[favorite_id]['rank']}º ({table[favorite_id]['points']} pts) × {table[underdog_id]['rank']}º ({table[underdog_id]['points']} pts) | +{gap} pts",
         "favoriteForm": form_text(favorite_form),
         "underdogForm": form_text(underdog_form),
     }
@@ -123,28 +168,24 @@ def candidate(game: Any, league: str, schedule: pd.DataFrame, table: dict[str, d
 def collect() -> dict[str, Any]:
     now = datetime.now(UTC)
     target_day = selected_day(now)
-    season_reference = datetime.combine(target_day, time.min, tzinfo=DISPLAY_TIMEZONE).astimezone(UTC)
     matches: list[dict[str, Any]] = []
     checked = 0
     failures: list[str] = []
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    for league in LEAGUES:
+    form_cache: dict[tuple[str, str, str, str], dict[str, int] | None] = {}
+    for slug in LEAGUES:
         try:
-            reader = sd.Sofascore(leagues=league, seasons=current_season(league, season_reference), data_dir=CACHE_DIR / "Sofascore")
-            schedule = reader.read_schedule().reset_index()
-            table = standings(reader.read_league_table().reset_index())
-            today = schedule[schedule["date"].map(stamp).map(lambda value: value.date() == target_day)]
-            checked += len(today)
-            for game in today.itertuples(index=False):
-                result = candidate(game, league, schedule, table)
+            events, table = scoreboard(slug, target_day), standings(slug, target_day.year)
+            checked += len(events)
+            for event in events:
+                result = candidate(event, slug, table, form_cache)
                 if result:
                     matches.append(result)
-        except Exception as error:  # A falha de uma liga não impede as demais.
-            failures.append(f"{league}: {type(error).__name__}")
+        except Exception as error:
+            failures.append(f"{LEAGUE_NAMES.get(slug, slug)}: {error}")
     return {
         "date": target_day.isoformat(),
         "runAt": datetime.now(UTC).isoformat(),
-        "source": "soccerdata/SofaScore",
+        "source": "ESPN pública",
         "checked": checked,
         "totalToday": checked,
         "approved": len(matches),
