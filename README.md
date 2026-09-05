@@ -1,6 +1,6 @@
 # BotBet Monitor
 
-Monitor de jogos gratuito: o coletor Python consulta o `soccerdata` com a fonte SofaScore, aplica as regras e publica o resultado no Worker. O Worker mantém o painel e dispara o Telegram. Não há API de odds no fluxo: a odd deve ser conferida manualmente antes de qualquer decisão.
+Monitor de jogos gratuito: o coletor Python consulta os endpoints públicos da ESPN, aplica as regras e publica o resultado no Worker. O Worker mantém o painel e dispara o Telegram. Não há API de odds no fluxo: a odd deve ser conferida manualmente antes de qualquer decisão.
 
 ## Critérios aplicados
 
@@ -14,8 +14,8 @@ Monitor de jogos gratuito: o coletor Python consulta o `soccerdata` com a fonte 
 
 | Parte | Serviço | Função |
 | --- | --- | --- |
-| Coleta | GitHub Actions + Python | Executa três vezes por dia e guarda cache do `soccerdata`. |
-| Estatísticas | `soccerdata` / SofaScore | Calendário, tabela e resultados. |
+| Coleta | GitHub Actions + Python | Executa três vezes por dia. |
+| Estatísticas | ESPN pública | Calendário, tabela e resultados. |
 | Painel e alertas | Cloudflare Worker + KV | Exibe os jogos aprovados e envia Telegram. |
 | Aviso | Telegram Bot API | Entrega o alerta privado. |
 
@@ -67,4 +67,4 @@ Para publicar localmente no Worker, acrescente `BOTBET_INGEST_URL` e `BOTBET_ING
 
 ## Limites e responsabilidade
 
-`soccerdata` é um coletor de fontes públicas, não uma API contratada; mudanças ou bloqueios da fonte podem interromper a rotina. O sistema é um filtro estatístico para teste e não prevê resultados nem constitui recomendação de aposta.
+A ESPN pública não é uma API contratada; mudanças ou bloqueios da fonte podem interromper a rotina. O sistema é um filtro estatístico para teste e não prevê resultados nem constitui recomendação de aposta.
