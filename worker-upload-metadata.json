@@ -1,0 +1,12 @@
+{
+  "body_part": "worker.js",
+  "compatibility_date": "2026-09-05",
+  "bindings": [
+    {
+      "name": "STATE",
+      "type": "kv_namespace",
+      "namespace_id": "a834b983fa6749ea91fb6d2b12af1547"
+    }
+  ],
+  "keep_bindings": ["secret_text"]
+}
