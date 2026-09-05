@@ -1,0 +1,12 @@
+name = "botbet-monitor"
+main = "src/worker.js"
+compatibility_date = "2026-09-05"
+account_id = "2dfda0bbb0772c9a6a2a8150ac1bd453"
+workers_dev = true
+
+[[kv_namespaces]]
+binding = "STATE"
+id = "a834b983fa6749ea91fb6d2b12af1547"
+
+[triggers]
+crons = ["0 6 * * *"]
