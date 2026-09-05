@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -32,6 +32,17 @@ def current_season(league: str, now: datetime) -> str:
         return str(now.year)
     start = now.year if now.month >= 7 else now.year - 1
     return f"{start % 100:02d}{(start + 1) % 100:02d}"
+
+
+def selected_day(now: datetime) -> date:
+    """Usa a data manual do Actions, quando houver; do contrário, hoje no Brasil."""
+    requested = os.getenv("BOTBET_TARGET_DATE", "").strip()
+    if not requested:
+        return now.astimezone(DISPLAY_TIMEZONE).date()
+    try:
+        return date.fromisoformat(requested)
+    except ValueError as error:
+        raise ValueError("BOTBET_TARGET_DATE deve usar o formato AAAA-MM-DD") from error
 
 
 def stamp(value: Any) -> datetime:
@@ -111,14 +122,15 @@ def candidate(game: Any, league: str, schedule: pd.DataFrame, table: dict[str, d
 
 def collect() -> dict[str, Any]:
     now = datetime.now(UTC)
-    target_day = now.astimezone(DISPLAY_TIMEZONE).date()
+    target_day = selected_day(now)
+    season_reference = datetime.combine(target_day, time.min, tzinfo=DISPLAY_TIMEZONE).astimezone(UTC)
     matches: list[dict[str, Any]] = []
     checked = 0
     failures: list[str] = []
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     for league in LEAGUES:
         try:
-            reader = sd.Sofascore(leagues=league, seasons=current_season(league, now), data_dir=CACHE_DIR / "Sofascore")
+            reader = sd.Sofascore(leagues=league, seasons=current_season(league, season_reference), data_dir=CACHE_DIR / "Sofascore")
             schedule = reader.read_schedule().reset_index()
             table = standings(reader.read_league_table().reset_index())
             today = schedule[schedule["date"].map(stamp).map(lambda value: value.date() == target_day)]
