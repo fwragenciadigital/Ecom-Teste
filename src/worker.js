@@ -66,18 +66,28 @@ async function ingest(request, env) {
   return json({ ok: true, sent, approved: stored.approved });
 }
 
-export default {
-  async fetch(request, env) {
-    const url = new URL(request.url);
-    if (url.pathname === '/') return dashboard();
-    if (url.pathname === '/health') return json({ ok: true, monitor: 'botbet', source: 'soccerdata' });
-    if (url.pathname === '/status') return json(JSON.parse((await env.STATE.get('latest_run')) || '{}'));
-    if (url.pathname === '/ingest' && request.method === 'POST') return ingest(request, env);
-    if (url.pathname === '/capture-telegram' && request.headers.get('authorization') === `Bearer ${env.RUN_SECRET}`) {
-      try { await captureChatId(env); return json({ ok: true, connected: Boolean(await env.STATE.get('chat_id')) }); }
-      catch (error) { return json({ error: error instanceof Error ? error.message : 'telegram_capture_failed' }, 500); }
-    }
-    return new Response('Not found', { status: 404 });
-  },
-  async scheduled(_, env, ctx) { ctx.waitUntil(captureChatId(env)); }
-};
+function environment() {
+  return {
+    STATE,
+    TELEGRAM_BOT_TOKEN: typeof TELEGRAM_BOT_TOKEN === 'undefined' ? undefined : TELEGRAM_BOT_TOKEN,
+    RUN_SECRET: typeof RUN_SECRET === 'undefined' ? undefined : RUN_SECRET,
+    INGEST_SECRET: typeof INGEST_SECRET === 'undefined' ? undefined : INGEST_SECRET
+  };
+}
+
+async function handleFetch(request) {
+  const env = environment();
+  const url = new URL(request.url);
+  if (url.pathname === '/') return dashboard();
+  if (url.pathname === '/health') return json({ ok: true, monitor: 'botbet', source: 'soccerdata' });
+  if (url.pathname === '/status') return json(JSON.parse((await env.STATE.get('latest_run')) || '{}'));
+  if (url.pathname === '/ingest' && request.method === 'POST') return ingest(request, env);
+  if (url.pathname === '/capture-telegram' && request.headers.get('authorization') === `Bearer ${env.RUN_SECRET}`) {
+    try { await captureChatId(env); return json({ ok: true, connected: Boolean(await env.STATE.get('chat_id')) }); }
+    catch (error) { return json({ error: error instanceof Error ? error.message : 'telegram_capture_failed' }, 500); }
+  }
+  return new Response('Not found', { status: 404 });
+}
+
+addEventListener('fetch', event => event.respondWith(handleFetch(event.request)));
+addEventListener('scheduled', event => event.waitUntil(captureChatId(environment())));
