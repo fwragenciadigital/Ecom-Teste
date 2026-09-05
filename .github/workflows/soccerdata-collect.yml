@@ -26,8 +26,7 @@ jobs:
       - run: python -m pip install --upgrade pip && python -m pip install -r collector/requirements.txt
       - run: python collector/monitor.py
         env:
-          SOCCERDATA_DIR: collector/.cache
-          BOTBET_LEAGUES: ENG-Premier League,ESP-La Liga,ITA-Serie A,GER-Bundesliga,BRA-Serie A
+          BOTBET_LEAGUES: eng.1,esp.1,ita.1,ger.1,bra.1
           BOTBET_INGEST_URL: ${{ secrets.BOTBET_INGEST_URL }}
           BOTBET_INGEST_SECRET: ${{ secrets.BOTBET_INGEST_SECRET }}
           BOTBET_TARGET_DATE: ${{ inputs.target_date }}
