@@ -1,6 +1,6 @@
 # BotBet Monitor
 
-Monitor de jogos gratuito: o coletor Python consulta os endpoints públicos da ESPN, aplica as regras e publica o resultado no Worker. O Worker mantém o painel e dispara o Telegram. Não há API de odds no fluxo: a odd deve ser conferida manualmente antes de qualquer decisão.
+Monitor de jogos gratuito: o coletor Python consulta a Football-Data.org, aplica as regras e publica o resultado no Worker. O Worker mantém o painel e dispara o Telegram. Não há API de odds no fluxo: a odd deve ser conferida manualmente antes de qualquer decisão.
 
 ## Critérios aplicados
 
@@ -15,7 +15,7 @@ Monitor de jogos gratuito: o coletor Python consulta os endpoints públicos da E
 | Parte | Serviço | Função |
 | --- | --- | --- |
 | Coleta | GitHub Actions + Python | Executa três vezes por dia. |
-| Estatísticas | ESPN pública | Calendário, tabela e resultados. |
+| Estatísticas | Football-Data.org | Calendário, tabela e resultados. |
 | Painel e alertas | Cloudflare Worker + KV | Exibe os jogos aprovados e envia Telegram. |
 | Aviso | Telegram Bot API | Entrega o alerta privado. |
 
@@ -53,18 +53,18 @@ No repositório do GitHub, abra **Settings → Secrets and variables → Actions
 | --- | --- |
 | `BOTBET_INGEST_URL` | `https://SEU_WORKER.workers.dev/ingest` |
 | `BOTBET_INGEST_SECRET` | o mesmo valor definido como `INGEST_SECRET` no Worker |
+| `FOOTBALL_DATA_TOKEN` | token gratuito da Football-Data.org |
 
 Depois acione **Actions → Coletar jogos BotBet → Run workflow**. O campo **Data a consultar** aceita `AAAA-MM-DD`: deixe vazio para hoje ou informe, por exemplo, `2026-09-06` para amanhã. O agendamento usa 05:00, 11:00 e 17:00 UTC; o GitHub pode atrasar alguns minutos tarefas gratuitas. Se a fonte bloquear uma coleta, o resultado falha fechado: não envia jogo sem dados completos.
 
 ## Execução local opcional
 
 ```bash
-python -m pip install -r collector/requirements.txt
-BOTBET_LEAGUES='ENG-Premier League' python collector/monitor.py
+FOOTBALL_DATA_TOKEN='seu-token' BOTBET_LEAGUES='PL' python collector/monitor.py
 ```
 
 Para publicar localmente no Worker, acrescente `BOTBET_INGEST_URL` e `BOTBET_INGEST_SECRET` ao ambiente. O arquivo `collector/latest_run.json` registra o último resultado local.
 
 ## Limites e responsabilidade
 
-A ESPN pública não é uma API contratada; mudanças ou bloqueios da fonte podem interromper a rotina. O sistema é um filtro estatístico para teste e não prevê resultados nem constitui recomendação de aposta.
+A Football-Data.org tem plano gratuito com cobertura limitada; mudanças de plano ou de API podem interromper a rotina. O sistema é um filtro estatístico para teste e não prevê resultados nem constitui recomendação de aposta.
