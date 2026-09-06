@@ -16,8 +16,22 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parent
 OUTPUT = Path(os.getenv("BOTBET_OUTPUT", ROOT / "latest_run.json"))
 API = "https://api.football-data.org/v4"
-LEAGUES = [item.strip() for item in os.getenv("BOTBET_LEAGUES", "PL,PD,SA,BL1,BSA").split(",") if item.strip()]
-LEAGUE_NAMES = {"PL": "Premier League", "PD": "La Liga", "SA": "Serie A", "BL1": "Bundesliga", "BSA": "Brasileirão Série A"}
+DEFAULT_LEAGUES = "CL,PPL,PL,DED,BL1,FL1,SA,PD,ELC,BSA,WC,EC"
+LEAGUES = [item.strip() for item in os.getenv("BOTBET_LEAGUES", DEFAULT_LEAGUES).split(",") if item.strip()]
+LEAGUE_NAMES = {
+    "CL": "Champions League",
+    "PPL": "Primeira Liga",
+    "PL": "Premier League",
+    "DED": "Eredivisie",
+    "BL1": "Bundesliga",
+    "FL1": "Ligue 1",
+    "SA": "Serie A",
+    "PD": "La Liga",
+    "ELC": "Championship",
+    "BSA": "Brasileirão Série A",
+    "WC": "Copa do Mundo",
+    "EC": "Eurocopa",
+}
 DISPLAY_TIMEZONE = ZoneInfo(os.getenv("BOTBET_TIMEZONE", "America/Sao_Paulo"))
 LAST_REQUEST_AT = 0.0
 
@@ -56,6 +70,8 @@ def get_matches(token: str, league: str, season: int) -> list[dict[str, Any]]:
             LAST_REQUEST_AT = time.monotonic()
             return json.load(response).get("matches", [])
     except HTTPError as error:
+        if error.code == 404:
+            return []
         raise RuntimeError(f"Football-Data {error.code}") from error
 
 
