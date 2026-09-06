@@ -1,35 +1,25 @@
-"""Coleta gratuita pela ESPN pública e publicação segura no Worker BotBet."""
+"""Coleta gratuita com football-data.org e publicação segura no Worker BotBet."""
 
 from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
-
-import requests
 
 ROOT = Path(__file__).resolve().parent
 OUTPUT = Path(os.getenv("BOTBET_OUTPUT", ROOT / "latest_run.json"))
-ESPN = "https://site.api.espn.com/apis"
-DEFAULT_LEAGUES = "eng.1,esp.1,ita.1,ger.1,bra.1"
-LEAGUE_NAMES = {
-    "eng.1": "Premier League",
-    "esp.1": "La Liga",
-    "ita.1": "Serie A",
-    "ger.1": "Bundesliga",
-    "bra.1": "Brasileirão Série A",
-}
-LEAGUES = [item.strip() for item in os.getenv("BOTBET_LEAGUES", DEFAULT_LEAGUES).split(",") if item.strip()]
+API = "https://api.football-data.org/v4"
+LEAGUES = [item.strip() for item in os.getenv("BOTBET_LEAGUES", "PL,PD,SA,BL1,BSA").split(",") if item.strip()]
+LEAGUE_NAMES = {"PL": "Premier League", "PD": "La Liga", "SA": "Serie A", "BL1": "Bundesliga", "BSA": "Brasileirão Série A"}
 DISPLAY_TIMEZONE = ZoneInfo(os.getenv("BOTBET_TIMEZONE", "America/Sao_Paulo"))
-SESSION = requests.Session()
-SESSION.headers.update({
-    "User-Agent": "Mozilla/5.0 (compatible; BotBetMonitor/1.0; +https://botbet-monitor.botbetwill.workers.dev/)",
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
-})
+LAST_REQUEST_AT = 0.0
 
 
 def selected_day(now: datetime) -> date:
@@ -42,68 +32,77 @@ def selected_day(now: datetime) -> date:
         raise ValueError("BOTBET_TARGET_DATE deve usar o formato AAAA-MM-DD") from error
 
 
-def get_json(path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-    response = SESSION.get(f"{ESPN}{path}", params=params, timeout=30)
-    if not response.ok:
-        raise RuntimeError(f"ESPN {response.status_code}")
-    return response.json()
+def season_year(league: str, target_day: date) -> int:
+    if league == "BSA":
+        return target_day.year
+    return target_day.year if target_day.month >= 7 else target_day.year - 1
 
 
-def stat(entry: dict[str, Any], name: str) -> int | None:
-    item = next((item for item in entry.get("stats", []) if item.get("name") == name), None)
-    try:
-        return int(float(item["value"])) if item else None
-    except (KeyError, TypeError, ValueError):
-        return None
+def kickoff(match: dict[str, Any]) -> datetime:
+    return datetime.fromisoformat(match["utcDate"].replace("Z", "+00:00"))
 
 
-def standings(slug: str, season: int) -> dict[str, dict[str, int]]:
-    data = get_json(f"/v2/sports/soccer/{slug}/standings", {"season": season})
-    entries = [entry for group in data.get("children", []) for entry in group.get("standings", {}).get("entries", [])]
-    result: dict[str, dict[str, int]] = {}
-    for entry in entries:
-        team_id = str(entry.get("team", {}).get("id", ""))
-        points, rank = stat(entry, "points"), stat(entry, "rank")
-        if team_id and points is not None and rank is not None:
-            result[team_id] = {"points": points, "rank": rank}
-    return result
-
-
-def scoreboard(slug: str, target_day: date) -> list[dict[str, Any]]:
-    data = get_json(
-        f"/site/v2/sports/soccer/{slug}/scoreboard",
-        {"dates": target_day.strftime("%Y%m%d"), "limit": 1000},
+def get_matches(token: str, league: str, season: int) -> list[dict[str, Any]]:
+    global LAST_REQUEST_AT
+    wait_for = 6.1 - (time.monotonic() - LAST_REQUEST_AT)
+    if wait_for > 0:
+        time.sleep(wait_for)
+    request = Request(
+        f"{API}/competitions/{league}/matches?{urlencode({'season': season})}",
+        headers={"X-Auth-Token": token, "Accept": "application/json"},
     )
-    return data.get("events", [])
+    try:
+        with urlopen(request, timeout=30) as response:
+            LAST_REQUEST_AT = time.monotonic()
+            return json.load(response).get("matches", [])
+    except HTTPError as error:
+        raise RuntimeError(f"Football-Data {error.code}") from error
 
 
-def form_text(form: dict[str, int]) -> str:
-    return f"{form['wins']}V {form['draws']}E {form['losses']}D"
+def finished(match: dict[str, Any]) -> bool:
+    score = match.get("score", {}).get("fullTime", {})
+    return match.get("status") == "FINISHED" and score.get("home") is not None and score.get("away") is not None
 
 
-def team_form(slug: str, team_id: str, venue: str, before: datetime) -> dict[str, int] | None:
-    data = get_json(f"/site/v2/sports/soccer/{slug}/teams/{team_id}/schedule", {"limit": 100})
+def table_before(matches: list[dict[str, Any]], before: datetime) -> dict[int, dict[str, int]]:
+    table: dict[int, dict[str, int]] = {}
+    for match in matches:
+        if not finished(match) or kickoff(match) >= before:
+            continue
+        home, away = match["homeTeam"], match["awayTeam"]
+        home_id, away_id = int(home["id"]), int(away["id"])
+        home_row = table.setdefault(home_id, {"points": 0, "played": 0, "gf": 0, "ga": 0})
+        away_row = table.setdefault(away_id, {"points": 0, "played": 0, "gf": 0, "ga": 0})
+        home_goals, away_goals = int(match["score"]["fullTime"]["home"]), int(match["score"]["fullTime"]["away"])
+        home_row["played"] += 1
+        away_row["played"] += 1
+        home_row["gf"] += home_goals
+        home_row["ga"] += away_goals
+        away_row["gf"] += away_goals
+        away_row["ga"] += home_goals
+        if home_goals > away_goals:
+            home_row["points"] += 3
+        elif away_goals > home_goals:
+            away_row["points"] += 3
+        else:
+            home_row["points"] += 1
+            away_row["points"] += 1
+    ordered = sorted(table.items(), key=lambda item: (item[1]["points"], item[1]["gf"] - item[1]["ga"], item[1]["gf"]), reverse=True)
+    return {team_id: {**row, "rank": position} for position, (team_id, row) in enumerate(ordered, start=1)}
+
+
+def same_venue_form(matches: list[dict[str, Any]], team_id: int, venue: str, before: datetime) -> dict[str, int] | None:
     outcomes: list[str] = []
-    for event in sorted(data.get("events", []), key=lambda item: item.get("date", ""), reverse=True):
-        competition = (event.get("competitions") or [{}])[0]
-        status = competition.get("status", {}).get("type", {})
-        if not status.get("completed"):
+    for match in sorted(matches, key=kickoff, reverse=True):
+        if not finished(match) or kickoff(match) >= before:
             continue
-        try:
-            kickoff = datetime.fromisoformat(event["date"].replace("Z", "+00:00"))
-        except (KeyError, TypeError, ValueError):
+        is_home = int(match["homeTeam"]["id"]) == team_id
+        is_away = int(match["awayTeam"]["id"]) == team_id
+        if (venue == "casa" and not is_home) or (venue == "fora" and not is_away):
             continue
-        if kickoff >= before:
-            continue
-        mine = next((item for item in competition.get("competitors", []) if str(item.get("team", {}).get("id")) == team_id), None)
-        opponent = next((item for item in competition.get("competitors", []) if str(item.get("team", {}).get("id")) != team_id), None)
-        if not mine or not opponent or mine.get("homeAway") != venue:
-            continue
-        try:
-            own, theirs = int(mine["score"]), int(opponent["score"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        outcomes.append("W" if own > theirs else "D" if own == theirs else "L")
+        home_goals, away_goals = int(match["score"]["fullTime"]["home"]), int(match["score"]["fullTime"]["away"])
+        own, opponent = (home_goals, away_goals) if is_home else (away_goals, home_goals)
+        outcomes.append("W" if own > opponent else "D" if own == opponent else "L")
         if len(outcomes) == 5:
             break
     if len(outcomes) < 5:
@@ -111,53 +110,37 @@ def team_form(slug: str, team_id: str, venue: str, before: datetime) -> dict[str
     return {"wins": outcomes.count("W"), "draws": outcomes.count("D"), "losses": outcomes.count("L")}
 
 
-def candidate(event: dict[str, Any], slug: str, table: dict[str, dict[str, int]], form_cache: dict[tuple[str, str, str, str], dict[str, int] | None]) -> dict[str, Any] | None:
-    competition = (event.get("competitions") or [{}])[0]
-    if competition.get("status", {}).get("type", {}).get("state") != "pre":
-        return None
-    home = next((item for item in competition.get("competitors", []) if item.get("homeAway") == "home"), None)
-    away = next((item for item in competition.get("competitors", []) if item.get("homeAway") == "away"), None)
-    if not home or not away:
-        return None
-    home_id, away_id = str(home.get("team", {}).get("id", "")), str(away.get("team", {}).get("id", ""))
+def form_text(form: dict[str, int]) -> str:
+    return f"{form['wins']}V {form['draws']}E {form['losses']}D"
+
+
+def candidate(match: dict[str, Any], league: str, current_season: list[dict[str, Any]], form_history: list[dict[str, Any]]) -> dict[str, Any] | None:
+    match_kickoff = kickoff(match)
+    home, away = match["homeTeam"], match["awayTeam"]
+    home_id, away_id = int(home["id"]), int(away["id"])
+    table = table_before(current_season, match_kickoff)
     if home_id not in table or away_id not in table or table[home_id]["points"] == table[away_id]["points"]:
         return None
-    favorite = home if table[home_id]["points"] > table[away_id]["points"] else away
-    underdog = away if favorite is home else home
-    favorite_id, underdog_id = str(favorite["team"]["id"]), str(underdog["team"]["id"])
-    side = "casa" if favorite is home else "fora"
+    favorite, underdog = (home, away) if table[home_id]["points"] > table[away_id]["points"] else (away, home)
+    favorite_id, underdog_id = int(favorite["id"]), int(underdog["id"])
+    side = "casa" if favorite_id == home_id else "fora"
     underdog_side = "fora" if side == "casa" else "casa"
     gap = table[favorite_id]["points"] - table[underdog_id]["points"]
     if gap < 6:
         return None
-    try:
-        kickoff = datetime.fromisoformat(event["date"].replace("Z", "+00:00"))
-    except (KeyError, TypeError, ValueError):
-        return None
-
-    def form(team_id: str, venue: str) -> dict[str, int] | None:
-        key = (slug, team_id, venue, kickoff.isoformat())
-        if key not in form_cache:
-            form_cache[key] = team_form(slug, team_id, venue, kickoff)
-        return form_cache[key]
-
-    favorite_form, underdog_form = form(favorite_id, side), form(underdog_id, underdog_side)
+    favorite_form = same_venue_form(form_history, favorite_id, side, match_kickoff)
+    underdog_form = same_venue_form(form_history, underdog_id, underdog_side, match_kickoff)
     if not favorite_form or not underdog_form:
         return None
-    if favorite_form["losses"] > 1 or favorite_form["draws"] > 1:
+    if favorite_form["losses"] > 1 or favorite_form["draws"] > 1 or underdog_form["wins"] > 1 or underdog_form["losses"] < 3:
         return None
-    if underdog_form["wins"] > 1 or underdog_form["losses"] < 3:
-        return None
-    home_name = home.get("team", {}).get("displayName", "Casa")
-    away_name = away.get("team", {}).get("displayName", "Fora")
-    favorite_name = favorite.get("team", {}).get("displayName", "Favorito")
     return {
-        "id": str(event.get("id", f"{slug}:{home_id}:{away_id}:{kickoff.isoformat()}")),
-        "league": LEAGUE_NAMES.get(slug, slug),
-        "home": home_name,
-        "away": away_name,
-        "time": kickoff.astimezone(DISPLAY_TIMEZONE).strftime("%d/%m %H:%M"),
-        "favorite": favorite_name,
+        "id": str(match["id"]),
+        "league": LEAGUE_NAMES.get(league, league),
+        "home": home["name"],
+        "away": away["name"],
+        "time": match_kickoff.astimezone(DISPLAY_TIMEZONE).strftime("%d/%m %H:%M"),
+        "favorite": favorite["name"],
         "side": side,
         "table": f"{table[favorite_id]['rank']}º ({table[favorite_id]['points']} pts) × {table[underdog_id]['rank']}º ({table[underdog_id]['points']} pts) | +{gap} pts",
         "favoriteForm": form_text(favorite_form),
@@ -166,26 +149,32 @@ def candidate(event: dict[str, Any], slug: str, table: dict[str, dict[str, int]]
 
 
 def collect() -> dict[str, Any]:
+    token = os.getenv("FOOTBALL_DATA_TOKEN", "").strip()
+    if not token:
+        raise RuntimeError("FOOTBALL_DATA_TOKEN não configurado")
     now = datetime.now(UTC)
     target_day = selected_day(now)
     matches: list[dict[str, Any]] = []
     checked = 0
     failures: list[str] = []
-    form_cache: dict[tuple[str, str, str, str], dict[str, int] | None] = {}
-    for slug in LEAGUES:
+    for league in LEAGUES:
         try:
-            events, table = scoreboard(slug, target_day), standings(slug, target_day.year)
-            checked += len(events)
-            for event in events:
-                result = candidate(event, slug, table, form_cache)
+            current_year = season_year(league, target_day)
+            current = get_matches(token, league, current_year)
+            previous = get_matches(token, league, current_year - 1)
+            history = [*previous, *current]
+            fixtures = [match for match in current if kickoff(match).astimezone(DISPLAY_TIMEZONE).date() == target_day and match.get("status") in {"SCHEDULED", "TIMED"}]
+            checked += len(fixtures)
+            for fixture in fixtures:
+                result = candidate(fixture, league, current, history)
                 if result:
                     matches.append(result)
         except Exception as error:
-            failures.append(f"{LEAGUE_NAMES.get(slug, slug)}: {error}")
+            failures.append(f"{LEAGUE_NAMES.get(league, league)}: {error}")
     return {
         "date": target_day.isoformat(),
         "runAt": datetime.now(UTC).isoformat(),
-        "source": "ESPN pública",
+        "source": "Football-Data.org",
         "checked": checked,
         "totalToday": checked,
         "approved": len(matches),
@@ -201,8 +190,19 @@ def publish(result: dict[str, Any]) -> None:
     url, secret = os.getenv("BOTBET_INGEST_URL"), os.getenv("BOTBET_INGEST_SECRET")
     if not url or not secret:
         return
-    response = requests.post(url, json=result, headers={"X-Ingest-Secret": secret}, timeout=30)
-    response.raise_for_status()
+    request = Request(
+        url,
+        data=json.dumps(result).encode("utf-8"),
+        method="POST",
+        headers={
+            "X-Ingest-Secret": secret,
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "User-Agent": "BotBet-Monitor/1.0 (+https://github.com/fwragenciadigital/Ecom-Teste)",
+        },
+    )
+    with urlopen(request, timeout=30):
+        pass
 
 
 if __name__ == "__main__":
