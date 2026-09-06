@@ -114,38 +114,63 @@ def form_text(form: dict[str, int]) -> str:
     return f"{form['wins']}V {form['draws']}E {form['losses']}D"
 
 
-def candidate(match: dict[str, Any], league: str, current_season: list[dict[str, Any]], form_history: list[dict[str, Any]]) -> dict[str, Any] | None:
+def match_base(match: dict[str, Any], league: str) -> dict[str, Any]:
     match_kickoff = kickoff(match)
     home, away = match["homeTeam"], match["awayTeam"]
-    home_id, away_id = int(home["id"]), int(away["id"])
-    table = table_before(current_season, match_kickoff)
-    if home_id not in table or away_id not in table or table[home_id]["points"] == table[away_id]["points"]:
-        return None
-    favorite, underdog = (home, away) if table[home_id]["points"] > table[away_id]["points"] else (away, home)
-    favorite_id, underdog_id = int(favorite["id"]), int(underdog["id"])
-    side = "casa" if favorite_id == home_id else "fora"
-    underdog_side = "fora" if side == "casa" else "casa"
-    gap = table[favorite_id]["points"] - table[underdog_id]["points"]
-    if gap < 6:
-        return None
-    favorite_form = same_venue_form(form_history, favorite_id, side, match_kickoff)
-    underdog_form = same_venue_form(form_history, underdog_id, underdog_side, match_kickoff)
-    if not favorite_form or not underdog_form:
-        return None
-    if favorite_form["losses"] > 1 or favorite_form["draws"] > 1 or underdog_form["wins"] > 1 or underdog_form["losses"] < 3:
-        return None
     return {
         "id": str(match["id"]),
         "league": LEAGUE_NAMES.get(league, league),
         "home": home["name"],
         "away": away["name"],
         "time": match_kickoff.astimezone(DISPLAY_TIMEZONE).strftime("%d/%m %H:%M"),
+    }
+
+
+def rejected(base: dict[str, Any], reason: str) -> dict[str, Any]:
+    return {**base, "reason": reason}
+
+
+def evaluate(match: dict[str, Any], league: str, current_season: list[dict[str, Any]], form_history: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    match_kickoff = kickoff(match)
+    home, away = match["homeTeam"], match["awayTeam"]
+    base = match_base(match, league)
+    home_id, away_id = int(home["id"]), int(away["id"])
+    table = table_before(current_season, match_kickoff)
+    if home_id not in table or away_id not in table:
+        return None, rejected(base, "Tabela sem dados suficientes antes desta partida")
+    if table[home_id]["points"] == table[away_id]["points"]:
+        return None, rejected(base, "Equipes empatadas em pontos na tabela; não há favorito definido")
+    favorite, underdog = (home, away) if table[home_id]["points"] > table[away_id]["points"] else (away, home)
+    favorite_id, underdog_id = int(favorite["id"]), int(underdog["id"])
+    side = "casa" if favorite_id == home_id else "fora"
+    underdog_side = "fora" if side == "casa" else "casa"
+    gap = table[favorite_id]["points"] - table[underdog_id]["points"]
+    details = {
         "favorite": favorite["name"],
         "side": side,
         "table": f"{table[favorite_id]['rank']}º ({table[favorite_id]['points']} pts) × {table[underdog_id]['rank']}º ({table[underdog_id]['points']} pts) | +{gap} pts",
-        "favoriteForm": form_text(favorite_form),
-        "underdogForm": form_text(underdog_form),
     }
+    if gap < 6:
+        return None, rejected({**base, **details}, f"Diferença de {gap} ponto(s) na tabela; mínimo exigido: 6")
+    favorite_form = same_venue_form(form_history, favorite_id, side, match_kickoff)
+    underdog_form = same_venue_form(form_history, underdog_id, underdog_side, match_kickoff)
+    if not favorite_form:
+        return None, rejected({**base, **details}, f"Favorito sem cinco jogos anteriores no mando {side}")
+    if not underdog_form:
+        return None, rejected({**base, **details, "favoriteForm": form_text(favorite_form)}, f"Não favorito sem cinco jogos anteriores no mando {underdog_side}")
+    details = {**details, "favoriteForm": form_text(favorite_form), "underdogForm": form_text(underdog_form)}
+    reasons = []
+    if favorite_form["losses"] > 1:
+        reasons.append(f"Favorito tem {favorite_form['losses']} derrotas no mando (máximo: 1)")
+    if favorite_form["draws"] > 1:
+        reasons.append(f"Favorito tem {favorite_form['draws']} empates no mando (máximo: 1)")
+    if underdog_form["wins"] > 1:
+        reasons.append(f"Não favorito tem {underdog_form['wins']} vitórias no mando (máximo: 1)")
+    if underdog_form["losses"] < 3:
+        reasons.append(f"Não favorito tem {underdog_form['losses']} derrotas no mando (mínimo: 3)")
+    if reasons:
+        return None, rejected({**base, **details}, " · ".join(reasons))
+    return {**base, **details}, None
 
 
 def collect() -> dict[str, Any]:
@@ -155,22 +180,32 @@ def collect() -> dict[str, Any]:
     now = datetime.now(UTC)
     target_day = selected_day(now)
     matches: list[dict[str, Any]] = []
+    rejected_matches: list[dict[str, Any]] = []
+    league_summary: list[dict[str, Any]] = []
     checked = 0
     failures: list[str] = []
     for league in LEAGUES:
+        summary = {"league": LEAGUE_NAMES.get(league, league), "fixtures": 0, "approved": 0, "rejected": 0}
         try:
             current_year = season_year(league, target_day)
             current = get_matches(token, league, current_year)
             previous = get_matches(token, league, current_year - 1)
             history = [*previous, *current]
             fixtures = [match for match in current if kickoff(match).astimezone(DISPLAY_TIMEZONE).date() == target_day and match.get("status") in {"SCHEDULED", "TIMED"}]
+            summary["fixtures"] = len(fixtures)
             checked += len(fixtures)
             for fixture in fixtures:
-                result = candidate(fixture, league, current, history)
+                result, rejected_result = evaluate(fixture, league, current, history)
                 if result:
                     matches.append(result)
+                    summary["approved"] += 1
+                elif rejected_result:
+                    rejected_matches.append(rejected_result)
+                    summary["rejected"] += 1
         except Exception as error:
             failures.append(f"{LEAGUE_NAMES.get(league, league)}: {error}")
+            summary["error"] = str(error)
+        league_summary.append(summary)
     return {
         "date": target_day.isoformat(),
         "runAt": datetime.now(UTC).isoformat(),
@@ -179,6 +214,9 @@ def collect() -> dict[str, Any]:
         "totalToday": checked,
         "approved": len(matches),
         "matches": matches,
+        "rejected": len(rejected_matches),
+        "rejectedMatches": rejected_matches[:100],
+        "leagueSummary": league_summary,
         "failures": len(failures),
         "failureReasons": failures[:5],
     }
