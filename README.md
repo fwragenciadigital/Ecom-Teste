@@ -19,7 +19,7 @@ Monitor de jogos gratuito: o coletor Python consulta a Football-Data.org, aplica
 | Painel e alertas | Cloudflare Worker + KV | Exibe os jogos aprovados e envia Telegram. |
 | Aviso | Telegram Bot API | Entrega o alerta privado. |
 
-O pacote inicia com Premier League, La Liga, Serie A, Bundesliga e Brasileirão Série A. Edite `BOTBET_LEAGUES` em `.github/workflows/soccerdata-collect.yml` para ampliar as ligas depois de validar a coleta.
+O pacote monitora todas as 12 competições liberadas no plano gratuito da Football-Data: Champions League, Primeira Liga, Premier League, Eredivisie, Bundesliga, Ligue 1, Serie A, La Liga, Championship, Brasileirão Série A, Copa do Mundo e Eurocopa. Competições sem temporada ativa simplesmente aparecem com zero jogos na coleta.
 
 ## Publicação do Worker
 
