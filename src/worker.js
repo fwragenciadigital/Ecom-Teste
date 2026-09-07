@@ -17,14 +17,125 @@ async function telegram(env, method, payload) {
   return response.json();
 }
 
-async function captureChatId(env) {
-  if (!env.TELEGRAM_BOT_TOKEN || await env.STATE.get('chat_id')) return;
-  const updates = await telegram(env, 'getUpdates', { timeout: 0, allowed_updates: ['message'] });
-  const update = updates?.result?.find(item => item.message?.chat?.type === 'private');
-  if (!update) return;
-  const chatId = String(update.message.chat.id);
-  await env.STATE.put('chat_id', chatId);
-  await telegram(env, 'sendMessage', { chat_id: chatId, text: '✅ Alertas BotBet ativados. Vou avisar somente jogos que passarem em todos os filtros.' });
+const html = value => String(value ?? '').replace(/[&<>]/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[char]));
+
+function saoPauloDate(offset = 0) {
+  const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
+  const value = type => parts.find(part => part.type === type)?.value;
+  const date = new Date(`${value('year')}-${value('month')}-${value('day')}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + offset);
+  return date.toISOString().slice(0, 10);
+}
+
+function commandOf(text) {
+  return String(text || '').trim().toLowerCase().split(/\s+/)[0].replace(/@[^\s]+$/, '');
+}
+
+function commandsText() {
+  return [
+    '🤖 <b>BotBet</b>',
+    'Use os comandos abaixo para consultar a última coleta disponível.',
+    '',
+    '/hoje — resumo e candidatos de hoje',
+    '/amanha — resumo e candidatos de amanhã',
+    '/aprovados — somente candidatos aprovados',
+    '/reprovados — jogos eliminados e motivos',
+    '/ligas — cobertura por competição',
+    '/status — situação da coleta',
+    '/painel — abrir a interface web',
+    '',
+    'A odd continua para validação manual.'
+  ].join('\n');
+}
+
+async function resultForDate(env, date) {
+  const raw = await env.STATE.get(`run:${date}`);
+  return raw ? JSON.parse(raw) : null;
+}
+
+function resultHeader(result) {
+  return `📅 <b>${result.date.split('-').reverse().join('/')}</b>\nJogos analisados: <b>${result.checked || 0}</b> · Aprovados: <b>${result.approved || 0}</b> · Reprovados: <b>${result.rejected || 0}</b>`;
+}
+
+function compactMatch(match, rejected = false) {
+  const title = `<b>${html(match.home)} × ${html(match.away)}</b> — ${html(match.time)}`;
+  if (rejected) return `${title}\n❌ ${html(match.reason || 'Critério não informado')}`;
+  return `${title}\n✅ Favorito: ${html(match.favorite)} (${html(match.side)}) · ${html(match.table)}`;
+}
+
+function matchesText(result, type) {
+  const rejected = type === 'rejected';
+  const items = rejected ? (result.rejectedMatches || []) : (result.matches || []);
+  const label = rejected ? 'reprovado' : 'aprovado';
+  if (!items.length) return `${resultHeader(result)}\n\nNenhum jogo ${label} nesta coleta.`;
+  const shown = items.slice(0, 8);
+  const remaining = items.length - shown.length;
+  return [resultHeader(result), '', ...shown.map(item => compactMatch(item, rejected)), remaining > 0 ? `\n… e mais ${remaining} jogo(s) no painel.` : ''].filter(Boolean).join('\n\n');
+}
+
+function leaguesText(result) {
+  const lines = (result.leagueSummary || []).map(league => league.error
+    ? `• <b>${html(league.league)}</b>: erro na fonte`
+    : `• <b>${html(league.league)}</b>: ${league.fixtures || 0} jogos · ${league.approved || 0} aprovados · ${league.rejected || 0} reprovados`);
+  return [resultHeader(result), '', '<b>Cobertura por liga</b>', ...lines].join('\n');
+}
+
+async function ensureBotCommands(env) {
+  if (await env.STATE.get('telegram_commands_ready')) return;
+  await telegram(env, 'setMyCommands', {
+    commands: [
+      { command: 'hoje', description: 'Consultar jogos de hoje' },
+      { command: 'amanha', description: 'Consultar jogos de amanhã' },
+      { command: 'aprovados', description: 'Ver jogos aprovados' },
+      { command: 'reprovados', description: 'Ver jogos reprovados' },
+      { command: 'ligas', description: 'Ver cobertura por liga' },
+      { command: 'status', description: 'Ver última coleta' },
+      { command: 'painel', description: 'Abrir o painel web' }
+    ]
+  });
+  await env.STATE.put('telegram_commands_ready', '1');
+}
+
+async function replyToCommand(env, message) {
+  if (message?.chat?.type !== 'private' || !message?.chat?.id) return;
+  const chatId = String(message.chat.id);
+  const owner = await env.STATE.get('chat_id');
+  if (owner && owner !== chatId) return;
+  if (!owner) await env.STATE.put('chat_id', chatId);
+  const command = commandOf(message.text);
+  const today = saoPauloDate();
+  const tomorrow = saoPauloDate(1);
+  const date = command === '/amanha' ? tomorrow : today;
+  const result = await resultForDate(env, date);
+  let text;
+  if (command === '/start' || command === '/ajuda' || !command) text = commandsText();
+  else if (command === '/painel') text = '📊 Painel BotBet:\nhttps://botbet-monitor.botbetwill.workers.dev/';
+  else if (command === '/status') {
+    const latest = JSON.parse((await env.STATE.get('latest_run')) || 'null');
+    text = latest ? `${resultHeader(latest)}\n\nFonte: ${html(latest.source || '—')}\nAtualizado: ${html(new Date(latest.runAt).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }))}` : 'Ainda não há coleta disponível.';
+  } else if (!result) {
+    text = `Ainda não há uma coleta para ${date.split('-').reverse().join('/')}. O bot será atualizado pela próxima rotina agendada.`;
+  } else if (command === '/ligas') text = leaguesText(result);
+  else if (command === '/reprovados') text = matchesText(result, 'rejected');
+  else if (command === '/aprovados') text = matchesText(result, 'approved');
+  else if (command === '/hoje' || command === '/amanha') text = matchesText(result, 'approved');
+  else text = commandsText();
+  await telegram(env, 'sendMessage', { chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true });
+}
+
+async function processTelegramUpdates(env) {
+  if (!env.TELEGRAM_BOT_TOKEN) return;
+  const offset = Number(await env.STATE.get('telegram_offset') || '0');
+  const updates = await telegram(env, 'getUpdates', { offset, timeout: 0, allowed_updates: ['message'] });
+  let nextOffset = offset;
+  for (const update of updates?.result || []) {
+    nextOffset = Math.max(nextOffset, Number(update.update_id) + 1);
+    try { await replyToCommand(env, update.message); }
+    catch (error) { console.log('telegram_command_failed', error instanceof Error ? error.message : 'unknown'); }
+  }
+  if (nextOffset > offset) await env.STATE.put('telegram_offset', String(nextOffset));
+  try { await ensureBotCommands(env); }
+  catch (error) { console.log('telegram_commands_failed', error instanceof Error ? error.message : 'unknown'); }
 }
 
 function alertText(match) {
@@ -49,7 +160,7 @@ async function ingest(request, env) {
   try { result = await request.json(); }
   catch { return json({ error: 'invalid_json' }, 400); }
   if (!Array.isArray(result.matches) || !Number.isFinite(result.checked) || !Number.isFinite(result.approved)) return json({ error: 'invalid_payload' }, 400);
-  await captureChatId(env);
+  await processTelegramUpdates(env);
   const chatId = await env.STATE.get('chat_id');
   let sent = 0;
   const failures = [];
@@ -62,7 +173,8 @@ async function ingest(request, env) {
     } catch (error) { failures.push(error instanceof Error ? error.message : 'telegram_failed'); }
   }
   const stored = { ...result, runAt: result.runAt || new Date().toISOString(), sent, failures: (result.failures || 0) + failures.length, failureReasons: [...new Set([...(result.failureReasons || []), ...failures])].slice(0, 5) };
-  await env.STATE.put('latest_run', JSON.stringify(stored));
+  await env.STATE.put(`run:${stored.date}`, JSON.stringify(stored), { expirationTtl: 604800 });
+  if (stored.date === saoPauloDate()) await env.STATE.put('latest_run', JSON.stringify(stored));
   return json({ ok: true, sent, approved: stored.approved });
 }
 
@@ -80,14 +192,17 @@ async function handleFetch(request) {
   const url = new URL(request.url);
   if (url.pathname === '/') return dashboard();
   if (url.pathname === '/health') return json({ ok: true, monitor: 'botbet', source: 'football-data.org' });
-  if (url.pathname === '/status') return json(JSON.parse((await env.STATE.get('latest_run')) || '{}'));
+  if (url.pathname === '/status') {
+    const date = url.searchParams.get('date');
+    return json(JSON.parse((date ? await env.STATE.get(`run:${date}`) : await env.STATE.get('latest_run')) || '{}'));
+  }
   if (url.pathname === '/ingest' && request.method === 'POST') return ingest(request, env);
   if (url.pathname === '/capture-telegram' && request.headers.get('authorization') === `Bearer ${env.RUN_SECRET}`) {
-    try { await captureChatId(env); return json({ ok: true, connected: Boolean(await env.STATE.get('chat_id')) }); }
+    try { await processTelegramUpdates(env); return json({ ok: true, connected: Boolean(await env.STATE.get('chat_id')) }); }
     catch (error) { return json({ error: error instanceof Error ? error.message : 'telegram_capture_failed' }, 500); }
   }
   return new Response('Not found', { status: 404 });
 }
 
 addEventListener('fetch', event => event.respondWith(handleFetch(event.request)));
-addEventListener('scheduled', event => event.waitUntil(captureChatId(environment())));
+addEventListener('scheduled', event => event.waitUntil(processTelegramUpdates(environment())));
