@@ -9,4 +9,4 @@ binding = "STATE"
 id = "a834b983fa6749ea91fb6d2b12af1547"
 
 [triggers]
-crons = ["0 6 * * *"]
+crons = ["*/5 * * * *"]
