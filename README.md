@@ -57,6 +57,20 @@ No repositório do GitHub, abra **Settings → Secrets and variables → Actions
 
 Depois acione **Actions → Coletar jogos BotBet → Run workflow**. O campo **Data a consultar** aceita `AAAA-MM-DD`: deixe vazio para hoje ou informe, por exemplo, `2026-09-06` para amanhã. O agendamento usa 05:00, 11:00 e 17:00 UTC; o GitHub pode atrasar alguns minutos tarefas gratuitas. Se a fonte bloquear uma coleta, o resultado falha fechado: não envia jogo sem dados completos.
 
+Nas execuções agendadas, o fluxo também armazena a consulta de amanhã. Isso permite a consulta pelo Telegram sem uma nova chamada manual.
+
+## Comandos do Telegram
+
+Após enviar `/start` ao bot, ele responde aos seguintes comandos:
+
+- `/hoje` e `/amanha`: candidatos estatísticos disponíveis para a data.
+- `/aprovados` e `/reprovados`: jogos aprovados ou eliminados, com os motivos.
+- `/ligas`: cobertura, quantidade de jogos e resultado por competição.
+- `/status`: última coleta gravada.
+- `/painel`: endereço da interface web.
+
+O Worker consulta novas mensagens do Telegram a cada cinco minutos. Os alertas automáticos continuam sendo enviados somente para jogos aprovados.
+
 ## Execução local opcional
 
 ```bash
