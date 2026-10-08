@@ -39,11 +39,15 @@ O pacote monitora todas as 12 competições liberadas no plano gratuito da Footb
 
    `wrangler deploy`
 
-4. Abra o bot no Telegram, envie `/start` e então chame uma vez:
+4. Abra o bot no Telegram, envie `/start` e então chame uma vez (só este endpoint grava o `chat_id` no KV):
 
    `curl -H "Authorization: Bearer SEU_RUN_SECRET" https://SEU_WORKER.workers.dev/capture-telegram`
 
+   Mensagens privadas antes dessa captura recebem aviso de que o bot ainda não está configurado; o primeiro chat não “sequestra” mais o destino dos alertas.
+
 O endereço `GET /health` não exige segredo. O painel está na raiz `/` e os resultados em `/status`.
+
+**Produção:** [https://botbet-monitor.botbetwill.workers.dev](https://botbet-monitor.botbetwill.workers.dev) (`/health`, `/`, `/status`). O comando `/painel` no Telegram usa a origem do Worker que processou a requisição (ingest ou captura); no cron de cinco minutos usa esse host de produção como padrão.
 
 ## Configuração do GitHub Actions
 
@@ -55,7 +59,11 @@ No repositório do GitHub, abra **Settings → Secrets and variables → Actions
 | `BOTBET_INGEST_SECRET` | o mesmo valor definido como `INGEST_SECRET` no Worker |
 | `FOOTBALL_DATA_TOKEN` | token gratuito da Football-Data.org |
 
-Depois acione **Actions → Coletar jogos BotBet → Run workflow**. O campo **Data a consultar** aceita `AAAA-MM-DD`: deixe vazio para hoje ou informe, por exemplo, `2026-09-06` para amanhã. O agendamento usa 05:00, 11:00 e 17:00 UTC; o GitHub pode atrasar alguns minutos tarefas gratuitas. Se a fonte bloquear uma coleta, o resultado falha fechado: não envia jogo sem dados completos.
+Depois acione **Actions → Coletar jogos BotBet → Run workflow**. O campo **Data a consultar** aceita `AAAA-MM-DD`: deixe vazio para hoje ou informe, por exemplo, `2026-09-06` para amanhã. O agendamento usa 05:00, 11:00 e 17:00 UTC; o GitHub pode atrasar alguns minutos tarefas gratuitas.
+
+**Falhas na coleta:** sem `FOOTBALL_DATA_TOKEN` o job termina com erro. Erros em ligas individuais são registrados em `failureReasons` e a execução continua (payload pode ser parcial). Nos **agendamentos**, `BOTBET_STRICT=1` faz o job falhar se houver falha em qualquer liga ou se nenhuma liga responder com sucesso; em `workflow_dispatch` o modo strict não é aplicado por padrão, para facilitar testes.
+
+**Publicação no Worker:** `POST /ingest` exige o cabeçalho `X-Ingest-Secret` (mesmo valor de `INGEST_SECRET` / `BOTBET_INGEST_SECRET`). Respostas HTTP 4xx/5xx no ingest fazem o coletor encerrar com erro e mensagem explícita.
 
 Nas execuções agendadas, o fluxo também armazena a consulta de amanhã. Isso permite a consulta pelo Telegram sem uma nova chamada manual.
 
