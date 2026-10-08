@@ -96,12 +96,35 @@ async function ensureBotCommands(env) {
   await env.STATE.put('telegram_commands_ready', '1');
 }
 
-async function replyToCommand(env, message) {
+const DEFAULT_PANEL_ORIGIN = 'https://botbet-monitor.botbetwill.workers.dev';
+
+function panelOriginFrom(requestUrl) {
+  if (!requestUrl) return DEFAULT_PANEL_ORIGIN;
+  try { return new URL(requestUrl).origin; }
+  catch { return DEFAULT_PANEL_ORIGIN; }
+}
+
+async function replyToCommand(env, message, { captureChat = false, panelOrigin = DEFAULT_PANEL_ORIGIN } = {}) {
   if (message?.chat?.type !== 'private' || !message?.chat?.id) return;
   const chatId = String(message.chat.id);
   const owner = await env.STATE.get('chat_id');
   if (owner && owner !== chatId) return;
-  if (!owner) await env.STATE.put('chat_id', chatId);
+  if (!owner) {
+    if (captureChat) await env.STATE.put('chat_id', chatId);
+    else {
+      await telegram(env, 'sendMessage', {
+        chat_id: chatId,
+        text: [
+          '⚙️ O BotBet ainda não está vinculado a este chat.',
+          '',
+          'Envie /start aqui e peça ao administrador para executar a captura autenticada (endpoint /capture-telegram com RUN_SECRET), conforme o README.',
+          'Até então, comandos e alertas não serão entregues neste chat.'
+        ].join('\n'),
+        disable_web_page_preview: true
+      });
+      return;
+    }
+  }
   const command = commandOf(message.text);
   const today = saoPauloDate();
   const tomorrow = saoPauloDate(1);
@@ -109,7 +132,7 @@ async function replyToCommand(env, message) {
   const result = await resultForDate(env, date);
   let text;
   if (command === '/start' || command === '/ajuda' || !command) text = commandsText();
-  else if (command === '/painel') text = '📊 Painel BotBet:\nhttps://botbet-monitor.botbetwill.workers.dev/';
+  else if (command === '/painel') text = `📊 Painel BotBet:\n${panelOrigin}/`;
   else if (command === '/status') {
     const latest = JSON.parse((await env.STATE.get('latest_run')) || 'null');
     text = latest ? `${resultHeader(latest)}\n\nFonte: ${html(latest.source || '—')}\nAtualizado: ${html(new Date(latest.runAt).toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }))}` : 'Ainda não há coleta disponível.';
@@ -123,14 +146,14 @@ async function replyToCommand(env, message) {
   await telegram(env, 'sendMessage', { chat_id: chatId, text, parse_mode: 'HTML', disable_web_page_preview: true });
 }
 
-async function processTelegramUpdates(env) {
+async function processTelegramUpdates(env, { captureChat = false, panelOrigin = DEFAULT_PANEL_ORIGIN } = {}) {
   if (!env.TELEGRAM_BOT_TOKEN) return;
   const offset = Number(await env.STATE.get('telegram_offset') || '0');
   const updates = await telegram(env, 'getUpdates', { offset, timeout: 0, allowed_updates: ['message'] });
   let nextOffset = offset;
   for (const update of updates?.result || []) {
     nextOffset = Math.max(nextOffset, Number(update.update_id) + 1);
-    try { await replyToCommand(env, update.message); }
+    try { await replyToCommand(env, update.message, { captureChat, panelOrigin }); }
     catch (error) { console.log('telegram_command_failed', error instanceof Error ? error.message : 'unknown'); }
   }
   if (nextOffset > offset) await env.STATE.put('telegram_offset', String(nextOffset));
@@ -160,7 +183,7 @@ async function ingest(request, env) {
   try { result = await request.json(); }
   catch { return json({ error: 'invalid_json' }, 400); }
   if (!Array.isArray(result.matches) || !Number.isFinite(result.checked) || !Number.isFinite(result.approved)) return json({ error: 'invalid_payload' }, 400);
-  await processTelegramUpdates(env);
+  await processTelegramUpdates(env, { panelOrigin: panelOriginFrom(request.url) });
   const chatId = await env.STATE.get('chat_id');
   let sent = 0;
   const failures = [];
@@ -198,7 +221,10 @@ async function handleFetch(request) {
   }
   if (url.pathname === '/ingest' && request.method === 'POST') return ingest(request, env);
   if (url.pathname === '/capture-telegram' && request.headers.get('authorization') === `Bearer ${env.RUN_SECRET}`) {
-    try { await processTelegramUpdates(env); return json({ ok: true, connected: Boolean(await env.STATE.get('chat_id')) }); }
+    try {
+      await processTelegramUpdates(env, { captureChat: true, panelOrigin: panelOriginFrom(request.url) });
+      return json({ ok: true, connected: Boolean(await env.STATE.get('chat_id')) });
+    }
     catch (error) { return json({ error: error instanceof Error ? error.message : 'telegram_capture_failed' }, 500); }
   }
   return new Response('Not found', { status: 404 });

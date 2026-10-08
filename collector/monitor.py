@@ -238,6 +238,23 @@ def collect() -> dict[str, Any]:
     }
 
 
+def strict_enabled() -> bool:
+    return os.getenv("BOTBET_STRICT", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def enforce_strict(result: dict[str, Any]) -> None:
+    """Com BOTBET_STRICT=1, falha se alguma liga errou ou se nenhuma liga respondeu."""
+    if not strict_enabled():
+        return
+    failures = int(result.get("failures") or 0)
+    if failures > 0:
+        reasons = "; ".join(result.get("failureReasons") or []) or "sem detalhe"
+        raise RuntimeError(f"BOTBET_STRICT: {failures} liga(s) com falha — {reasons}")
+    successes = sum(1 for row in result.get("leagueSummary") or [] if not row.get("error"))
+    if successes == 0:
+        raise RuntimeError("BOTBET_STRICT: nenhuma liga respondeu com sucesso (todas falharam ou lista vazia)")
+
+
 def publish(result: dict[str, Any]) -> None:
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT.write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -255,11 +272,19 @@ def publish(result: dict[str, Any]) -> None:
             "User-Agent": "BotBet-Monitor/1.0 (+https://github.com/fwragenciadigital/Ecom-Teste)",
         },
     )
-    with urlopen(request, timeout=30):
-        pass
+    try:
+        with urlopen(request, timeout=30) as response:
+            status = response.status
+            body = response.read().decode("utf-8", errors="replace").strip()
+    except HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace").strip()[:500]
+        raise RuntimeError(f"Ingest falhou com HTTP {error.code}: {detail or error.reason}") from error
+    if status >= 400:
+        raise RuntimeError(f"Ingest falhou com HTTP {status}: {body[:500] or 'sem corpo'}")
 
 
 if __name__ == "__main__":
     result = collect()
+    enforce_strict(result)
     publish(result)
     print(json.dumps({key: result[key] for key in ("date", "checked", "approved", "failures")}, ensure_ascii=False))

@@ -26,6 +26,7 @@ jobs:
       - run: python collector/monitor.py
         env:
           BOTBET_LEAGUES: CL,PPL,PL,DED,BL1,FL1,SA,PD,ELC,BSA,WC,EC
+          BOTBET_STRICT: ${{ github.event_name == 'schedule' && '1' || '' }}
           FOOTBALL_DATA_TOKEN: ${{ secrets.FOOTBALL_DATA_TOKEN }}
           BOTBET_INGEST_URL: ${{ secrets.BOTBET_INGEST_URL }}
           BOTBET_INGEST_SECRET: ${{ secrets.BOTBET_INGEST_SECRET }}
@@ -35,6 +36,7 @@ jobs:
         run: BOTBET_TARGET_DATE="$(TZ=America/Sao_Paulo date -d tomorrow +%F)" python collector/monitor.py
         env:
           BOTBET_LEAGUES: CL,PPL,PL,DED,BL1,FL1,SA,PD,ELC,BSA,WC,EC
+          BOTBET_STRICT: "1"
           FOOTBALL_DATA_TOKEN: ${{ secrets.FOOTBALL_DATA_TOKEN }}
           BOTBET_INGEST_URL: ${{ secrets.BOTBET_INGEST_URL }}
           BOTBET_INGEST_SECRET: ${{ secrets.BOTBET_INGEST_SECRET }}
