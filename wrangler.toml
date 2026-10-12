@@ -1,7 +1,7 @@
 name = "botbet-monitor"
 main = "src/worker.js"
 compatibility_date = "2026-09-05"
-account_id = "2dfda0bbb0772c9a6a2a8150ac1bd453"
+account_id = "138d2337c187637d995f5b2c0ba94033"
 workers_dev = true
 
 [[kv_namespaces]]
