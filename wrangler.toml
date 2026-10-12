@@ -6,7 +6,7 @@ workers_dev = true
 
 [[kv_namespaces]]
 binding = "STATE"
-id = "a834b983fa6749ea91fb6d2b12af1547"
+id = "67eb787fde6b4eada58d16d1984513d0"
 
 [triggers]
 crons = ["*/5 * * * *"]
