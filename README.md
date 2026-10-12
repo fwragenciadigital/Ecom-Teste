@@ -87,6 +87,25 @@ FOOTBALL_DATA_TOKEN='seu-token' BOTBET_LEAGUES='PL' python collector/monitor.py
 
 Para publicar localmente no Worker, acrescente `BOTBET_INGEST_URL` e `BOTBET_INGEST_SECRET` ao ambiente. O arquivo `collector/latest_run.json` registra o último resultado local.
 
+## Catalogação no painel
+
+Nos jogos **aprovados**, o painel permite registrar se a entrada foi **válida**, **inválida** ou **pendente**, além de **stake** (unidades, ex. BRL) e **odd no momento** (decimal). Os dados ficam no KV (`catalog:{id da partida}` na Football-Data) e não são apagados quando chega uma nova coleta — só mudam se o ID da partida mudar.
+
+1. Abra `/` e expanda **Configuração para salvar catalogação**.
+2. Cole o mesmo valor de `RUN_SECRET` do Worker (guardado só no `sessionStorage` deste navegador).
+3. Preencha os campos em cada jogo aprovado e clique em **Salvar catalogação**.
+
+O topo do painel mostra totais de entradas registradas, válidas, inválidas e um **ROI simples** (lucro/prejuízo ponderado pela stake nas entradas resolvidas com stake informada; vitórias usam a odd salva).
+
+**API** (opcional, para scripts):
+
+| Método | Caminho | Autenticação |
+| --- | --- | --- |
+| `GET` | `/api/catalog` | nenhuma (leitura pública) |
+| `POST` | `/api/catalog` | cabeçalho `X-Catalog-Secret` = `RUN_SECRET` |
+
+Corpo do `POST` (JSON): `matchId`, `result` (`pendente` \| `valida` \| `invalida`), `stake` e `odd` (números ou omitidos).
+
 ## Limites e responsabilidade
 
 A Football-Data.org tem plano gratuito com cobertura limitada; mudanças de plano ou de API podem interromper a rotina. O sistema é um filtro estatístico para teste e não prevê resultados nem constitui recomendação de aposta.
